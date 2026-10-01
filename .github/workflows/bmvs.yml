@@ -2,7 +2,7 @@ name: BMVS slot watcher
 
 on:
   schedule:
-    - cron: '*/5 * * * *'      # every 5 minutes (GitHub's minimum)
+    - cron: '*/5 * * * *'      # GitHub's minimum: a new run every 5 minutes
   workflow_dispatch:            # adds a "Run workflow" button for testing
     inputs:
       test_mode:
@@ -11,13 +11,24 @@ on:
         default: false
 
 concurrency:
-  group: bmvs-watcher           # never run two checks at once
+  group: bmvs-watcher           # never run two at once
   cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # ---- CHANGE THESE TWO TO SET HOW OFTEN IT CHECKS ----
+      # Each run must finish in under ~4 minutes, or runs start to queue up.
+      # Rough rule: (CHECKS_PER_RUN - 1) x GAP_SECONDS should be under 200.
+      #
+      #   1 check            -> about every 5 min (original)
+      #   2 checks, 120s gap -> about every 2.5 min
+      #   3 checks,  75s gap -> about every 1.5-2 min  (recommended)
+      #   4 checks,  60s gap -> about every 1-1.5 min  (fastest allowed)
+      CHECKS_PER_RUN: '3'
+      GAP_SECONDS: '75'
     steps:
       - uses: actions/checkout@v4
 
