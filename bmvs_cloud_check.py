@@ -1,17 +1,22 @@
 """
-BMVS watcher - CLOUD version (runs on GitHub Actions).
+BMVS watcher - CLOUD version (runs on GitHub Actions).  (version 2)
 
-Different from the PC version in one way: it does ONE check and exits.
-GitHub starts it again every ~5 minutes, so there is no loop here.
+NEW IN VERSION 2: several checks per run
+  GitHub can't start a scheduled run more often than every 5 minutes.
+  So each run now does a few checks, with a short wait between them, then
+  exits. Example: 3 checks, 75 seconds apart = a check about every 1.5-2 min.
 
-Your private details are NOT typed in this file. They come from
-GitHub "Secrets" (see cloud_setup_guide.md, Step 3), so the file is
-safe to sit in a public repository.
+  You change the numbers in bmvs.yml (CHECKS_PER_RUN and GAP_SECONDS),
+  not in this file.
+
+Your private details are NOT typed in this file. They come from GitHub
+Secrets (see cloud_setup_guide.md, Step 3).
 """
 
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -23,11 +28,17 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 HAP_ID = os.environ.get("HAP_ID", "")
 DOB = os.environ.get("DOB", "")
 
+# ---- Read from bmvs.yml -----------------------------------------------------
+CHECKS_PER_RUN = int(os.environ.get("CHECKS_PER_RUN", "1"))
+GAP_SECONDS = int(os.environ.get("GAP_SECONDS", "75"))
+GAP_SECONDS = max(GAP_SECONDS, 60)      # safety floor: never faster than 1/min
+
 # ---- Settings ---------------------------------------------------------------
 WATCH_CENTRES = ["Darwin"]
 START_URL = "https://bmvs.onlineappointmentscheduling.net.au/oasis/"
 NO_SLOT_TEXT = "no available slot"
-STATE_FILE = "state/bmvs_last_state.txt"   # kept between runs by GitHub cache
+STATE_DIR = "state"
+STATE_FILE = os.path.join(STATE_DIR, "bmvs_last_state.txt")
 
 
 def log(msg):
@@ -36,8 +47,13 @@ def log(msg):
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=20)
-    log(f"telegram {'sent' if r.status_code == 200 else 'FAILED ' + r.text[:150]}")
+    try:
+        r = requests.post(
+            url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=20
+        )
+        log(f"telegram {'sent' if r.status_code == 200 else 'FAILED ' + r.text[:150]}")
+    except Exception as exc:
+        log(f"telegram error: {exc}")
 
 
 def navigate_to_location(page):
@@ -83,10 +99,25 @@ def load_state():
 
 
 def save_state(state):
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
     with open(STATE_FILE, "w", encoding="utf-8") as fh:
         for k, v in state.items():
             fh.write(f"{k}|{v}\n")
+
+
+def check_once(browser):
+    """One full check with a fresh session. Returns {'Darwin': '...'}."""
+    context = browser.new_context(viewport={"width": 1400, "height": 1000})
+    page = context.new_page()
+    try:
+        navigate_to_location(page)
+        return read_availability(page)
+    finally:
+        try:
+            page.screenshot(path=os.path.join(STATE_DIR, "last_view.png"), full_page=True)
+        except Exception:
+            pass
+        context.close()
 
 
 def main():
@@ -99,34 +130,43 @@ def main():
         send_telegram("Cloud watcher test - GitHub can reach your phone.")
         return
 
-    os.makedirs("state", exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
     previous = load_state()
+    log(f"this run: {CHECKS_PER_RUN} check(s), {GAP_SECONDS}s apart")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1400, "height": 1000})
         try:
-            navigate_to_location(page)
-            current = read_availability(page)
+            for i in range(1, CHECKS_PER_RUN + 1):
+                try:
+                    current = check_once(browser)
+                    log(f"check {i}/{CHECKS_PER_RUN}  read: {current}")
+
+                    for centre, value in current.items():
+                        opened = NO_SLOT_TEXT not in value.lower() and value != "UNREADABLE"
+                        if opened and value != previous.get(centre, ""):
+                            send_telegram(
+                                f"SLOT OPEN - {centre}\n"
+                                f"First available: {value}\n\n"
+                                f"Book now:\n{START_URL}"
+                            )
+
+                    # Warn once if the page becomes unreadable
+                    now_bad = any(v == "UNREADABLE" for v in current.values())
+                    was_bad = any(v == "UNREADABLE" for v in previous.values())
+                    if now_bad and not was_bad:
+                        send_telegram("Cloud watcher: page could not be read. Check the Actions log.")
+
+                    previous = current
+                    save_state(previous)
+
+                except Exception as exc:
+                    log(f"check {i} failed: {type(exc).__name__}: {exc}")
+
+                if i < CHECKS_PER_RUN:
+                    time.sleep(GAP_SECONDS)
         finally:
-            page.screenshot(path="state/last_view.png", full_page=True)
             browser.close()
-
-    log(f"read: {current}")
-
-    for centre, value in current.items():
-        opened = NO_SLOT_TEXT not in value.lower() and value != "UNREADABLE"
-        if opened and value != previous.get(centre, ""):
-            send_telegram(
-                f"SLOT OPEN - {centre}\nFirst available: {value}\n\nBook now:\n{START_URL}"
-            )
-
-    # Warn once if the page becomes unreadable (layout change / blocked)
-    if any(v == "UNREADABLE" for v in current.values()) and \
-       not any(v == "UNREADABLE" for v in previous.values()):
-        send_telegram("Cloud watcher: page could not be read. Check the Actions log.")
-
-    save_state(current)
 
 
 if __name__ == "__main__":
