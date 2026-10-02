@@ -32,6 +32,7 @@ MODE = os.environ.get("MODE", "") or "normal"   # normal | telegram_only | full_
 # Each name is typed into the search box, then that name's row is read.
 # Use the name as it appears on the results page.
 WATCH_CENTRES = ["Darwin", "Alice Springs", "Brisbasne", "Canberra"]          # e.g. ["Darwin", "Brisbane"] for testing
+ALERT_CENTRE = "Darwin"
 
 START_URL = "https://bmvs.onlineappointmentscheduling.net.au/oasis/"
 NO_SLOT_TEXT = "no available slot"
@@ -63,7 +64,17 @@ def send_telegram(text):
 # ----------------------------------------------------------------------------
 # YOUR CALIBRATED CLICKS, split into two parts
 # ----------------------------------------------------------------------------
-
+def disable_workflow():
+    """Switch off this workflow's schedule so it stops after a slot is found."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    token = os.environ.get("GH_TOKEN", "")
+    r = requests.put(
+        f"https://api.github.com/repos/{repo}/actions/workflows/bmvs.yml/disable",
+        headers={"Authorization": f"Bearer {token}",
+                 "Accept": "application/vnd.github+json"},
+        timeout=20,
+    )
+    log(f"disable workflow: {'done' if r.status_code == 204 else 'FAILED ' + r.text[:150]}")
 def open_search_page(page):
     """Your first two calibrated clicks: get to the page with the search box."""
     page.goto(START_URL, wait_until="domcontentloaded", timeout=60000)
@@ -229,21 +240,25 @@ def main():
                     if all(v == "UNREADABLE" for v in current.values()):
                         failed_rounds += 1
 
-                    for centre, value in current.items():
-                        opened = NO_SLOT_TEXT not in value.lower() and value != "UNREADABLE"
-                        if opened and value != previous.get(centre, ""):
-                            send_telegram(
-                                f"SLOT OPEN - {centre}\n"
-                                f"First available: {value}\n\n"
-                                f"Book now:\n{START_URL}"
-                            )
+                    darwin = current.get(ALERT_CENTRE, "UNREADABLE")
 
-                        # Warn once when a centre first becomes unreadable
-                        if value == "UNREADABLE" and previous.get(centre) != "UNREADABLE":
-                            send_telegram(
-                                f"Cloud watcher: could not read {centre}. "
-                                f"Check the Actions log / screenshot."
-                            )
+                    if darwin != "UNREADABLE" and NO_SLOT_TEXT not in darwin.lower():
+                        log(f"*** SLOT FOUND {ALERT_CENTRE}: {darwin} ***")
+                        send_telegram(
+                            f"SLOT OPEN - {ALERT_CENTRE}\n"
+                            f"First available: {darwin}\n\n"
+                            f"Book now:\n{START_URL}\n\n"
+                            f"Watcher is now switched off."
+                        )
+                        disable_workflow()
+                        return
+
+                    # Warn once if Darwin becomes unreadable (others: log only)
+                    if darwin == "UNREADABLE" and previous.get(ALERT_CENTRE) != "UNREADABLE":
+                        send_telegram(
+                            f"Cloud watcher: could not read {ALERT_CENTRE}. "
+                            f"Check the Actions log / screenshot."
+                        )
 
                     previous.update(current)
                     save_state(previous)
