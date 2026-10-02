@@ -21,6 +21,11 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-24.04       # pinned: avoids surprise move to Ubuntu 26
+    permissions:    
+      actions: write            # lets the script switch off its own schedule
+      contents: read
+
+    
     timeout-minutes: 10
     env:
       # ---- CHANGE THESE TWO TO SET HOW OFTEN IT CHECKS ----
@@ -53,6 +58,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MODE: ${{ inputs.mode }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python bmvs_cloud_check.py
 
       - name: Upload screenshots
