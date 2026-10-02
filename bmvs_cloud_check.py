@@ -1,12 +1,6 @@
 """
 BMVS watcher - CLOUD version (runs on GitHub Actions).  (version 4)
 
-NEW IN VERSION 4
-  - Uses your calibrated clicks (New Family booking -> Next -> search).
-  - Searches each place in WATCH_CENTRES one by one and logs every result.
-  - HAP_ID and DOB secrets are no longer needed (your flow doesn't use them).
-  - One screenshot per centre, e.g. state/last_view_Darwin.png
-
 Number of checks per run is set in bmvs.yml (CHECKS_PER_RUN, GAP_SECONDS).
 """
 
